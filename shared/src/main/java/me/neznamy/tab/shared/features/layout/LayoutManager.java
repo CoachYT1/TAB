@@ -9,10 +9,10 @@ import me.neznamy.tab.api.chat.EnumChatFormat;
 import me.neznamy.tab.api.protocol.PacketPlayOutPlayerInfo;
 import me.neznamy.tab.api.protocol.PacketPlayOutPlayerInfo.EnumPlayerInfoAction;
 import me.neznamy.tab.api.protocol.PacketPlayOutPlayerInfo.PlayerInfoData;
-import me.neznamy.tab.shared.ITabPlayer;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.api.TabConstants;
 import me.neznamy.tab.shared.features.layout.skin.SkinManager;
+import me.neznamy.tab.shared.features.sorting.Sorting;
 import me.neznamy.tab.shared.placeholders.conditions.Condition;
 
 public class LayoutManager extends TabFeature {
@@ -24,7 +24,6 @@ public class LayoutManager extends TabFeature {
     private final int emptySlotPing = TAB.getInstance().getConfiguration().getLayout().getInt("empty-slot-ping-value", 1000);
     private final boolean hideVanishedPlayers = TAB.getInstance().getConfiguration().getLayout().getBoolean("hide-vanished-players", true);
     private final SkinManager skinManager = new SkinManager(defaultSkin);
-
     private final Map<Integer, UUID> uuids = new HashMap<Integer, UUID>(){{
         for (int slot=1; slot<=80; slot++) {
             put(slot, new UUID(0, translateSlot(slot)));
@@ -32,7 +31,9 @@ public class LayoutManager extends TabFeature {
     }};
     private final Map<String, Layout> layouts = loadLayouts();
     private final WeakHashMap<TabPlayer, Layout> playerViews = new WeakHashMap<>();
-    private final Map<TabPlayer, String> sortedPlayers = Collections.synchronizedMap(new TreeMap<>(Comparator.comparing(TabPlayer::getTeamName)));
+    private final WeakHashMap<TabPlayer, String> teamNames = new WeakHashMap<>();
+    private final Map<TabPlayer, String> sortedPlayers = Collections.synchronizedMap(new TreeMap<>(Comparator.comparing(teamNames::get)));
+    private final Sorting sorting = (Sorting) TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.SORTING);
 
     public LayoutManager() {
         super("Layout", "Switching layouts");
@@ -66,14 +67,18 @@ public class LayoutManager extends TabFeature {
             }
             for (String fixedSlot : (List<String>)map.getOrDefault("fixed-slots", Collections.emptyList())) {
                 String[] array = fixedSlot.split("\\|");
-                int slot = Integer.parseInt(array[0]);
-                String text = array[1];
-                String skin = array.length > 2 ? array[2] : "";
-                int ping = array.length > 3 ? TAB.getInstance().getErrorManager().parseInteger(array[3], emptySlotPing) : emptySlotPing;
-                FixedSlot f = new FixedSlot(l, slot, text, skin, ping);
-                fixedSlots.put(slot, f);
-                emptySlots.remove((Integer)slot);
-                if (text.length() > 0) TAB.getInstance().getFeatureManager().registerFeature(TabConstants.Feature.layoutSlot(layout.getKey().toString(), slot), f);
+                try {
+                    int slot = Integer.parseInt(array[0]);
+                    String text = array[1];
+                    String skin = array.length > 2 ? array[2] : "";
+                    int ping = array.length > 3 ? TAB.getInstance().getErrorManager().parseInteger(array[3], emptySlotPing) : emptySlotPing;
+                    FixedSlot f = new FixedSlot(l, slot, text, skin, ping);
+                    fixedSlots.put(slot, f);
+                    emptySlots.remove((Integer)slot);
+                    if (text.length() > 0) TAB.getInstance().getFeatureManager().registerFeature(TabConstants.Feature.layoutSlot(layout.getKey().toString(), slot), f);
+                } catch (NumberFormatException e) {
+                    TAB.getInstance().getErrorManager().startupWarn("Layout \"" + layout.getKey() + "\"'s fixed slot line \"" + fixedSlot + "&c\" has invalid number as slot.");
+                }
             }
             Map<String, Map<String, Object>> groups = (Map<String, Map<String, Object>>) map.get("groups");
             if (groups != null) {
@@ -83,7 +88,7 @@ public class LayoutManager extends TabFeature {
                     for (String line : (List<String>) group.getValue().get("slots")) {
                         String[] arr = line.split("-");
                         int from = Integer.parseInt(arr[0]);
-                        int to = Integer.parseInt(arr[1]);
+                        int to = arr.length == 1 ? from : Integer.parseInt(arr[1]);
                         for (int i = from; i<= to; i++) {
                             positions.add(i);
                         }
@@ -100,7 +105,8 @@ public class LayoutManager extends TabFeature {
 
     @Override
     public void onJoin(TabPlayer p) {
-        sortedPlayers.put(p, p.getTeamName());
+        teamNames.put(p, sorting.getFullTeamName(p));
+        sortedPlayers.put(p, sorting.getFullTeamName(p));
         Layout highest = getHighestLayout(p);
         if (highest != null) highest.sendTo(p);
         playerViews.put(p, highest);
@@ -118,6 +124,7 @@ public class LayoutManager extends TabFeature {
     @Override
     public void onQuit(TabPlayer p) {
         sortedPlayers.remove(p);
+        teamNames.remove(p);
         layouts.values().forEach(Layout::tick);
     }
 
@@ -181,7 +188,7 @@ public class LayoutManager extends TabFeature {
 
     public void updateTeamName(TabPlayer p, String teamName) {
         sortedPlayers.remove(p);
-        ((ITabPlayer) p).setTeamName(teamName);
+        teamNames.put(p, teamName);
         sortedPlayers.put(p, teamName);
         layouts.values().forEach(Layout::tick);
     }
